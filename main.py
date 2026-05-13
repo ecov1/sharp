@@ -45,6 +45,26 @@ def fetch_odds(key, sport):
     return response.json()
 
 
+def fetch_bookmakers(key, sport):
+    url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
+    params = {
+        'apiKey': key,
+        'regions': 'us,uk,eu,au',
+        'markets': 'h2h',
+        'oddsFormat': 'american',
+    }
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    data = response.json()
+
+    seen = {}
+    for game in data:
+        for book in game.get('bookmakers', []):
+            seen[book['key']] = book['title']
+
+    return seen
+
+
 def american_to_decimal(price):
     if price > 0:
         return (price / 100) + 1
@@ -137,12 +157,27 @@ def main():
     parser.add_argument('--refresh', action='store_true', help='Force a fresh fetch from the API')
     parser.add_argument('--sport', default='upcoming', help='Sport key (default: upcoming)')
     parser.add_argument('--min-edge', type=float, default=3.0, help='Minimum edge %% to display (default: 3)')
+    parser.add_argument('--list-books', action='store_true', help='List all available bookmakers for a sport and exit')
     args = parser.parse_args()
 
     load_dotenv()
     key = os.getenv('apiKey')
     if not key:
         print("Error: apiKey not found in .env")
+        return
+
+    if args.list_books:
+        print(f"Fetching available bookmakers for sport: {args.sport}...")
+        books = fetch_bookmakers(key, args.sport)
+        if not books:
+            print("No bookmakers found.")
+        else:
+            print(f"\n{'='*40}")
+            print(f"  AVAILABLE BOOKMAKERS ({len(books)} found)")
+            print(f"{'='*40}")
+            for key_name, title in sorted(books.items(), key=lambda x: x[1]):
+                print(f"  {title:<25} ({key_name})")
+            print()
         return
 
     if args.refresh or not is_cache_valid():
