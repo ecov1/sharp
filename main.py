@@ -135,7 +135,14 @@ def find_ev_opportunities(data, min_edge):
                         'ev': round(ev * 100, 2),
                     })
 
-    return sorted(opportunities, key=lambda x: x['ev'], reverse=True)
+    # Keep only the best-edge book per (game, pick)
+    best = {}
+    for o in opportunities:
+        key = (o['game'], o['pick'])
+        if key not in best or o['ev'] > best[key]['ev']:
+            best[key] = o
+
+    return sorted(best.values(), key=lambda x: x['ev'], reverse=True)
 
 
 SHEET_HEADERS = [
@@ -181,9 +188,9 @@ def log_to_sheet(sheet, opps):
             o['commence_time'],
             o['pick'],
             o['book'],
-            o['pinnacle_odds'],
+            f"+{o['pinnacle_odds']}" if o['pinnacle_odds'] > 0 else str(o['pinnacle_odds']),
             o['true_prob'],
-            o['soft_odds'],
+            f"+{o['soft_odds']}" if o['soft_odds'] > 0 else str(o['soft_odds']),
             o['soft_prob'],
             o['ev'],
             'pending',
