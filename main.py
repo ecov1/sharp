@@ -77,6 +77,7 @@ def find_ev_opportunities(data, min_edge):
             continue
 
         true_probs = no_vig_probs(sharp_h2h['outcomes'])
+        pinnacle_odds = {o['name']: o['price'] for o in sharp_h2h['outcomes']}
 
         for book_key in SOFT_BOOKS:
             if book_key not in books:
@@ -100,7 +101,9 @@ def find_ev_opportunities(data, min_edge):
                         'commence_time': game['commence_time'],
                         'pick': name,
                         'book': books[book_key]['title'],
-                        'odds': outcome['price'],
+                        'soft_odds': outcome['price'],
+                        'soft_prob': round(implied_prob(outcome['price']) * 100, 2),
+                        'pinnacle_odds': pinnacle_odds.get(name),
                         'true_prob': round(true_probs[name] * 100, 2),
                         'ev': round(ev * 100, 2),
                     })
@@ -118,12 +121,13 @@ def print_opportunities(opps):
     print(f"{'='*60}")
 
     for o in opps:
-        sign = '+' if o['odds'] > 0 else ''
+        pin_sign = '+' if o['pinnacle_odds'] > 0 else ''
+        soft_sign = '+' if o['soft_odds'] > 0 else ''
         print(f"\n  {o['game']}  ({o['sport']})")
-        print(f"  Pick:      {o['pick']} @ {o['book']}")
-        print(f"  Odds:      {sign}{o['odds']}")
-        print(f"  True Prob: {o['true_prob']}%")
-        print(f"  Edge:      +{o['ev']}%")
+        print(f"  Pick:              {o['pick']}")
+        print(f"  Pinnacle:          {pin_sign}{o['pinnacle_odds']}  (no-vig prob: {o['true_prob']}%)")
+        print(f"  {o['book']:<18} {soft_sign}{o['soft_odds']}  (implied prob: {o['soft_prob']}%)")
+        print(f"  Edge:              +{o['ev']}%")
 
     print(f"\n{'='*60}\n")
 
