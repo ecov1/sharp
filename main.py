@@ -3,7 +3,10 @@ import json
 import argparse
 import requests
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+EASTERN = ZoneInfo('America/New_York')
 
 try:
     import gspread
@@ -17,6 +20,11 @@ CACHE_TTL_MINUTES = 10
 SHARP_BOOK = 'pinnacle'
 SOFT_BOOKS = ['fanduel', 'draftkings']
 DEFAULT_MIN_EDGE = 0.03
+
+
+def to_eastern(iso_str):
+    dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+    return dt.astimezone(EASTERN).strftime('%Y-%m-%d %I:%M %p ET')
 
 
 def is_cache_valid():
@@ -186,10 +194,10 @@ def log_to_sheet(sheet, opps):
         if key in logged:
             continue
         new_rows.append([
-            datetime.now().strftime('%Y-%m-%d %H:%M'),
+            datetime.now(EASTERN).strftime('%Y-%m-%d %I:%M %p ET'),
             o['game'],
             o['sport'],
-            o['commence_time'],
+            to_eastern(o['commence_time']),
             o['pick'],
             o['book'],
             f"+{o['pinnacle_odds']}" if o['pinnacle_odds'] > 0 else str(o['pinnacle_odds']),
@@ -221,7 +229,7 @@ def print_validate(data):
             continue
 
         print(f"\n  {game['away_team']} @ {game['home_team']}  ({game['sport_key']})")
-        print(f"  Game time: {game['commence_time']}")
+        print(f"  Game time: {to_eastern(game['commence_time'])}")
 
         # Collect all outcome names across books
         outcome_names = []
