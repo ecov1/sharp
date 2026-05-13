@@ -20,6 +20,7 @@ CACHE_TTL_MINUTES = 10
 SHARP_BOOK = 'pinnacle'
 SOFT_BOOKS = ['fanduel', 'draftkings']
 DEFAULT_MIN_EDGE = 0.03
+MARKETS = ['h2h', 'spreads', 'totals']
 
 
 def to_eastern(iso_str):
@@ -51,7 +52,7 @@ def fetch_odds(key, sport):
     params = {
         'apiKey': key,
         'regions': 'us',
-        'markets': 'h2h',
+        'markets': 'h2h,spreads,totals',
         'oddsFormat': 'american',
         'bookmakers': ','.join([SHARP_BOOK] + SOFT_BOOKS),
     }
@@ -92,10 +93,20 @@ def implied_prob(price):
     return abs(price) / (abs(price) + 100)
 
 
-def no_vig_probs(outcomes):
-    raw = {o['name']: implied_prob(o['price']) for o in outcomes}
-    total = sum(raw.values())
-    return {name: prob / total for name, prob in raw.items()}
+def outcome_id(outcome, market_key):
+    if market_key == 'h2h':
+        return outcome['name']
+    return (outcome['name'], outcome.get('point'))
+
+
+def format_pick(outcome, market_key):
+    if market_key == 'h2h':
+        return outcome['name']
+    point = outcome.get('point', '')
+    if market_key == 'spreads':
+        sign = '+' if point > 0 else ''
+        return f"{outcome['name']} {sign}{point}"
+    return f"{outcome['name']} {point}"  # totals: Over/Under 8.5
 
 
 def find_ev_opportunities(data, min_edge):
@@ -111,46 +122,50 @@ def find_ev_opportunities(data, min_edge):
         if SHARP_BOOK not in books:
             continue
 
-        sharp_h2h = next((m for m in books[SHARP_BOOK]['markets'] if m['key'] == 'h2h'), None)
-        if not sharp_h2h:
-            continue
-
-        true_probs = no_vig_probs(sharp_h2h['outcomes'])
-        pinnacle_odds = {o['name']: o['price'] for o in sharp_h2h['outcomes']}
-
-        for book_key in SOFT_BOOKS:
-            if book_key not in books:
+        for market_key in MARKETS:
+            sharp_market = next((m for m in books[SHARP_BOOK]['markets'] if m['key'] == market_key), None)
+            if not sharp_market:
                 continue
 
-            soft_h2h = next((m for m in books[book_key]['markets'] if m['key'] == 'h2h'), None)
-            if not soft_h2h:
-                continue
+            raw_probs = {outcome_id(o, market_key): implied_prob(o['price']) for o in sharp_market['outcomes']}
+            total = sum(raw_probs.values())
+            true_probs = {k: v / total for k, v in raw_probs.items()}
+            pin_odds = {outcome_id(o, market_key): o['price'] for o in sharp_market['outcomes']}
 
-            for outcome in soft_h2h['outcomes']:
-                name = outcome['name']
-                if name not in true_probs:
+            for book_key in SOFT_BOOKS:
+                if book_key not in books:
                     continue
 
-                ev = (true_probs[name] * american_to_decimal(outcome['price'])) - 1
+                soft_market = next((m for m in books[book_key]['markets'] if m['key'] == market_key), None)
+                if not soft_market:
+                    continue
 
-                if ev >= min_edge:
-                    opportunities.append({
-                        'game': f"{game['away_team']} @ {game['home_team']}",
-                        'sport': game['sport_key'],
-                        'commence_time': game['commence_time'],
-                        'pick': name,
-                        'book': books[book_key]['title'],
-                        'soft_odds': outcome['price'],
-                        'soft_prob': round(implied_prob(outcome['price']) * 100, 2),
-                        'pinnacle_odds': pinnacle_odds.get(name),
-                        'true_prob': round(true_probs[name] * 100, 2),
-                        'ev': round(ev * 100, 2),
-                    })
+                for outcome in soft_market['outcomes']:
+                    oid = outcome_id(outcome, market_key)
+                    if oid not in true_probs:
+                        continue
 
-    # Keep only the best-edge book per (game, pick)
+                    ev = (true_probs[oid] * american_to_decimal(outcome['price'])) - 1
+
+                    if ev >= min_edge:
+                        opportunities.append({
+                            'game': f"{game['away_team']} @ {game['home_team']}",
+                            'sport': game['sport_key'],
+                            'market': market_key,
+                            'commence_time': game['commence_time'],
+                            'pick': format_pick(outcome, market_key),
+                            'book': books[book_key]['title'],
+                            'soft_odds': outcome['price'],
+                            'soft_prob': round(implied_prob(outcome['price']) * 100, 2),
+                            'pinnacle_odds': pin_odds[oid],
+                            'true_prob': round(true_probs[oid] * 100, 2),
+                            'ev': round(ev * 100, 2),
+                        })
+
+    # Keep only best-edge book per (game, market, pick)
     best = {}
     for o in opportunities:
-        key = (o['game'], o['pick'])
+        key = (o['game'], o['market'], o['pick'])
         if key not in best or o['ev'] > best[key]['ev']:
             best[key] = o
 
@@ -158,7 +173,7 @@ def find_ev_opportunities(data, min_edge):
 
 
 SHEET_HEADERS = [
-    'Flagged At', 'Game', 'Sport', 'Game Time', 'Pick', 'Book',
+    'Flagged At', 'Game', 'Sport', 'Market', 'Game Time', 'Pick', 'Book',
     'Pinnacle Odds', 'True Prob %', 'Soft Odds', 'Soft Implied Prob %',
     'Edge %', 'Result', 'Profit/Loss',
 ]
@@ -186,17 +201,18 @@ def setup_sheet(creds_path, sheet_name):
 def log_to_sheet(sheet, opps):
     existing = sheet.get_all_values()
     # Build a set of already-logged keys: game + pick + book
-    logged = {(r[1], r[4], r[5]) for r in existing[1:]} if len(existing) > 1 else set()
+    logged = {(r[1], r[3], r[5]) for r in existing[1:]} if len(existing) > 1 else set()
 
     new_rows = []
     for o in opps:
-        key = (o['game'], o['pick'], o['book'])
+        key = (o['game'], o['market'], o['pick'])
         if key in logged:
             continue
         new_rows.append([
             datetime.now(EASTERN).strftime('%Y-%m-%d %I:%M %p ET'),
             o['game'],
             o['sport'],
+            o['market'],
             to_eastern(o['commence_time']),
             o['pick'],
             o['book'],
@@ -231,33 +247,40 @@ def print_validate(data):
         print(f"\n  {game['away_team']} @ {game['home_team']}  ({game['sport_key']})")
         print(f"  Game time: {to_eastern(game['commence_time'])}")
 
-        # Collect all outcome names across books
-        outcome_names = []
-        for bk in available:
-            h2h = next((m for m in books[bk]['markets'] if m['key'] == 'h2h'), None)
-            if h2h:
-                for o in h2h['outcomes']:
-                    if o['name'] not in outcome_names:
-                        outcome_names.append(o['name'])
-
-        # Header row
         col_w = 22
-        header = f"  {'Outcome':<20}" + ''.join(f"{books[b]['title']:<{col_w}}" for b in available)
-        print(f"\n{header}")
-        print(f"  {'-'*18}" + ('-' * col_w * len(available)))
+        header = f"  {'Outcome':<24}" + ''.join(f"{books[b]['title']:<{col_w}}" for b in available)
 
-        for name in outcome_names:
-            row = f"  {name:<20}"
+        for market_key in MARKETS:
+            market_outcomes = []
             for bk in available:
-                h2h = next((m for m in books[bk]['markets'] if m['key'] == 'h2h'), None)
-                price = next((o['price'] for o in h2h['outcomes'] if o['name'] == name), None) if h2h else None
-                if price is not None:
-                    sign = '+' if price > 0 else ''
-                    cell = f"{sign}{price}  ({round(implied_prob(price) * 100, 1)}%)"
-                else:
-                    cell = 'n/a'
-                row += f"{cell:<{col_w}}"
-            print(row)
+                m = next((mk for mk in books[bk]['markets'] if mk['key'] == market_key), None)
+                if m:
+                    for o in m['outcomes']:
+                        label = format_pick(o, market_key)
+                        if label not in market_outcomes:
+                            market_outcomes.append(label)
+
+            if not market_outcomes:
+                continue
+
+            print(f"\n  [{market_key}]")
+            print(header)
+            print(f"  {'-'*22}" + ('-' * col_w * len(available)))
+
+            for label in market_outcomes:
+                row = f"  {label:<24}"
+                for bk in available:
+                    m = next((mk for mk in books[bk]['markets'] if mk['key'] == market_key), None)
+                    price = None
+                    if m:
+                        price = next((o['price'] for o in m['outcomes'] if format_pick(o, market_key) == label), None)
+                    if price is not None:
+                        sign = '+' if price > 0 else ''
+                        cell = f"{sign}{price}  ({round(implied_prob(price) * 100, 1)}%)"
+                    else:
+                        cell = 'n/a'
+                    row += f"{cell:<{col_w}}"
+                print(row)
 
     print(f"\n{'='*70}\n")
 
@@ -276,6 +299,7 @@ def print_opportunities(opps):
         soft_sign = '+' if o['soft_odds'] > 0 else ''
         print(f"\n  {o['game']}  ({o['sport']})")
         print(f"  Game time:         {to_eastern(o['commence_time'])}")
+        print(f"  Market:            {o['market']}")
         print(f"  Pick:              {o['pick']}")
         print(f"  Pinnacle:          {pin_sign}{o['pinnacle_odds']}  (no-vig prob: {o['true_prob']}%)")
         print(f"  {o['book']:<18} {soft_sign}{o['soft_odds']}  (implied prob: {o['soft_prob']}%)")
