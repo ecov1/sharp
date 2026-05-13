@@ -100,7 +100,7 @@ def no_vig_probs(outcomes):
 
 def find_ev_opportunities(data, min_edge):
     opportunities = []
-    now = datetime.now(datetime.UTC)
+    now = datetime.now(timezone.utc)
 
     for game in data:
         if datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00')) <= now:
