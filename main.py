@@ -18,7 +18,7 @@ except ImportError:
 CACHE_FILE = 'odds_cache.json'
 CACHE_TTL_MINUTES = 10
 SHARP_BOOK = 'pinnacle'
-SOFT_BOOKS = ['fanduel', 'draftkings']
+SOFT_BOOKS = ['fanduel', 'draftkings', 'betmgm', 'betrivers', 'bovada', 'betonlineag', 'lowvig', 'mybookieag']
 DEFAULT_MIN_EDGE = 0.03
 MARKETS = ['h2h', 'spreads', 'totals']
 
