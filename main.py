@@ -275,6 +275,7 @@ def print_opportunities(opps):
         pin_sign = '+' if o['pinnacle_odds'] > 0 else ''
         soft_sign = '+' if o['soft_odds'] > 0 else ''
         print(f"\n  {o['game']}  ({o['sport']})")
+        print(f"  Game time:         {to_eastern(o['commence_time'])}")
         print(f"  Pick:              {o['pick']}")
         print(f"  Pinnacle:          {pin_sign}{o['pinnacle_odds']}  (no-vig prob: {o['true_prob']}%)")
         print(f"  {o['book']:<18} {soft_sign}{o['soft_odds']}  (implied prob: {o['soft_prob']}%)")
