@@ -153,12 +153,13 @@ def setup_sheet(creds_path, sheet_name):
     try:
         sheet = client.open(sheet_name).sheet1
     except gspread.SpreadsheetNotFound:
-        spreadsheet = client.create(sheet_name)
-        spreadsheet.share(None, perm_type='anyone', role='writer')
-        sheet = spreadsheet.sheet1
+        print(f"Error: Sheet '{sheet_name}' not found.")
+        print("Create it manually in Google Drive, then share it with the service account email in your credentials JSON.")
+        return None
+
+    # Add headers if sheet is empty
+    if not sheet.get_all_values():
         sheet.append_row(SHEET_HEADERS)
-        print(f"Created new sheet: {sheet_name}")
-        print(f"URL: {spreadsheet.url}")
 
     return sheet
 
@@ -319,7 +320,8 @@ def main():
             print("Error: GOOGLE_CREDENTIALS_PATH not set in .env")
             return
         sheet = setup_sheet(creds_path, sheet_name)
-        log_to_sheet(sheet, opps)
+        if sheet:
+            log_to_sheet(sheet, opps)
 
 
 if __name__ == "__main__":
