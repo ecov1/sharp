@@ -1,2 +1,4 @@
 .env
 odds_cache.json
+*credentials*.json
+*service_account*.json

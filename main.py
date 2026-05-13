@@ -5,6 +5,13 @@ import requests
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+
 CACHE_FILE = 'odds_cache.json'
 CACHE_TTL_MINUTES = 10
 SHARP_BOOK = 'pinnacle'
@@ -131,6 +138,110 @@ def find_ev_opportunities(data, min_edge):
     return sorted(opportunities, key=lambda x: x['ev'], reverse=True)
 
 
+SHEET_HEADERS = [
+    'Flagged At', 'Game', 'Sport', 'Game Time', 'Pick', 'Book',
+    'Pinnacle Odds', 'True Prob %', 'Soft Odds', 'Soft Implied Prob %',
+    'Edge %', 'Result', 'Profit/Loss',
+]
+
+
+def setup_sheet(creds_path, sheet_name):
+    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+    client = gspread.authorize(creds)
+
+    try:
+        sheet = client.open(sheet_name).sheet1
+    except gspread.SpreadsheetNotFound:
+        spreadsheet = client.create(sheet_name)
+        spreadsheet.share(None, perm_type='anyone', role='writer')
+        sheet = spreadsheet.sheet1
+        sheet.append_row(SHEET_HEADERS)
+        print(f"Created new sheet: {sheet_name}")
+        print(f"URL: {spreadsheet.url}")
+
+    return sheet
+
+
+def log_to_sheet(sheet, opps):
+    existing = sheet.get_all_values()
+    # Build a set of already-logged keys: game + pick + book
+    logged = {(r[1], r[4], r[5]) for r in existing[1:]} if len(existing) > 1 else set()
+
+    new_rows = []
+    for o in opps:
+        key = (o['game'], o['pick'], o['book'])
+        if key in logged:
+            continue
+        new_rows.append([
+            datetime.now().strftime('%Y-%m-%d %H:%M'),
+            o['game'],
+            o['sport'],
+            o['commence_time'],
+            o['pick'],
+            o['book'],
+            o['pinnacle_odds'],
+            o['true_prob'],
+            o['soft_odds'],
+            o['soft_prob'],
+            o['ev'],
+            'pending',
+            '',
+        ])
+
+    if new_rows:
+        sheet.append_rows(new_rows)
+        print(f"Logged {len(new_rows)} new opportunity/opportunities to sheet.")
+    else:
+        print("No new opportunities to log (all already in sheet).")
+
+
+def print_validate(data):
+    all_books = [SHARP_BOOK] + SOFT_BOOKS
+    print(f"\n{'='*70}")
+    print(f"  ODDS VALIDATION — compare these against the actual sites")
+    print(f"{'='*70}")
+
+    for game in data:
+        books = {b['key']: b for b in game['bookmakers']}
+        available = [b for b in all_books if b in books]
+        if not available:
+            continue
+
+        print(f"\n  {game['away_team']} @ {game['home_team']}  ({game['sport_key']})")
+        print(f"  Game time: {game['commence_time']}")
+
+        # Collect all outcome names across books
+        outcome_names = []
+        for bk in available:
+            h2h = next((m for m in books[bk]['markets'] if m['key'] == 'h2h'), None)
+            if h2h:
+                for o in h2h['outcomes']:
+                    if o['name'] not in outcome_names:
+                        outcome_names.append(o['name'])
+
+        # Header row
+        col_w = 22
+        header = f"  {'Outcome':<20}" + ''.join(f"{books[b]['title']:<{col_w}}" for b in available)
+        print(f"\n{header}")
+        print(f"  {'-'*18}" + ('-' * col_w * len(available)))
+
+        for name in outcome_names:
+            row = f"  {name:<20}"
+            for bk in available:
+                h2h = next((m for m in books[bk]['markets'] if m['key'] == 'h2h'), None)
+                price = next((o['price'] for o in h2h['outcomes'] if o['name'] == name), None) if h2h else None
+                if price is not None:
+                    sign = '+' if price > 0 else ''
+                    cell = f"{sign}{price}  ({round(implied_prob(price) * 100, 1)}%)"
+                else:
+                    cell = 'n/a'
+                row += f"{cell:<{col_w}}"
+            print(row)
+
+    print(f"\n{'='*70}\n")
+
+
 def print_opportunities(opps):
     if not opps:
         print("No +EV opportunities found above threshold.")
@@ -158,6 +269,8 @@ def main():
     parser.add_argument('--sport', default='upcoming', help='Sport key (default: upcoming)')
     parser.add_argument('--min-edge', type=float, default=3.0, help='Minimum edge %% to display (default: 3)')
     parser.add_argument('--list-books', action='store_true', help='List all available bookmakers for a sport and exit')
+    parser.add_argument('--log-sheet', action='store_true', help='Log opportunities to Google Sheet')
+    parser.add_argument('--validate', action='store_true', help='Show side-by-side odds table for manual verification')
     args = parser.parse_args()
 
     load_dotenv()
@@ -189,8 +302,24 @@ def main():
         print(f"Using cached odds from {json.load(open(CACHE_FILE))['cached_at']} (--refresh to update).")
         data = load_cache()
 
+    if args.validate:
+        print_validate(data)
+        return
+
     opps = find_ev_opportunities(data, min_edge=args.min_edge / 100)
     print_opportunities(opps)
+
+    if args.log_sheet:
+        if not GSPREAD_AVAILABLE:
+            print("Error: gspread not installed. Run: pip install gspread google-auth")
+            return
+        creds_path = os.getenv('GOOGLE_CREDENTIALS_PATH')
+        sheet_name = os.getenv('SHEET_NAME', 'Sharp Bot Picks')
+        if not creds_path:
+            print("Error: GOOGLE_CREDENTIALS_PATH not set in .env")
+            return
+        sheet = setup_sheet(creds_path, sheet_name)
+        log_to_sheet(sheet, opps)
 
 
 if __name__ == "__main__":
