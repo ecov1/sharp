@@ -770,7 +770,7 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
                 if len(parts) == 2:
                     legs[parts[1]] = m
 
-            legs.pop('TIE', None)  # soccer has a draw leg; skip it for team matching
+            tie_market = legs.pop('TIE', None)  # soccer draw leg — save price, exclude from team matching
 
             if len(legs) != 2:
                 continue
@@ -785,6 +785,7 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
             try:
                 team_a_yes_ask = float(legs[team_a_code].get('yes_ask_dollars', 0))
                 team_b_yes_ask = float(legs[team_b_code].get('yes_ask_dollars', 0))
+                tie_yes_ask = float(tie_market.get('yes_ask_dollars', 0)) if tie_market else 0.0
             except (TypeError, ValueError):
                 continue
 
@@ -799,6 +800,7 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
                 'team_b': team_b,
                 'team_a_yes_ask': team_a_yes_ask,  # dollars (0.0–1.0 = implied prob)
                 'team_b_yes_ask': team_b_yes_ask,
+                'tie_yes_ask': tie_yes_ask,
                 'draws': series_info.get('draws', False),
             })
 
@@ -899,32 +901,88 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge, debug=False):
                     'kelly': round(kelly, 2),
                 })
 
-            # Arb: only valid for 2-outcome sports (a 2-leg arb doesn't cover the draw in soccer)
-            if kg.get('draws'):
-                continue
+            if not kg.get('draws'):
+                # 2-leg arb: Kalshi YES one team + sportsbook on the other
+                for book_key in SOFT_BOOKS:
+                    if book_key not in gi['books']:
+                        continue
+                    soft_h2h = next((m for m in gi['books'][book_key]['markets'] if m['key'] == 'h2h'), None)
+                    if not soft_h2h:
+                        continue
+                    opp_outcome = next((o for o in soft_h2h['outcomes'] if _teams_match(opp_name, o['name'])), None)
+                    if not opp_outcome:
+                        continue
+                    sb_implied = 1 / american_to_decimal(opp_outcome['price'])
+                    total_cost = yes_ask + sb_implied
+                    profit = 1 - total_cost
+                    if profit >= min_edge:
+                        arbs.append({
+                            'game': gi['game_str'], 'sport': sport,
+                            'commence_time': game['commence_time'],
+                            'profit_pct': round(profit * 100, 2),
+                            'legs': [
+                                {'source': 'Kalshi', 'desc': f'{team_name} YES @ {round(yes_ask*100,1)}¢', 'stake_pct': round(yes_ask/total_cost*100, 1)},
+                                {'source': gi['books'][book_key]['title'], 'desc': f'{opp_name} {opp_outcome["price"]:+d}', 'stake_pct': round(sb_implied/total_cost*100, 1)},
+                            ],
+                        })
+
+        # 3-leg soccer arb: requires covering home win, draw, and away win
+        if kg.get('draws'):
+            # Collect best odds per outcome across all soft books
+            best_sb = {}  # outcome_name -> (book_title, price, implied)
             for book_key in SOFT_BOOKS:
                 if book_key not in gi['books']:
                     continue
                 soft_h2h = next((m for m in gi['books'][book_key]['markets'] if m['key'] == 'h2h'), None)
                 if not soft_h2h:
                     continue
-                opp_outcome = next((o for o in soft_h2h['outcomes'] if _teams_match(opp_name, o['name'])), None)
-                if not opp_outcome:
+                book_title = gi['books'][book_key]['title']
+                for o in soft_h2h['outcomes']:
+                    existing = best_sb.get(o['name'])
+                    if existing is None or o['price'] > existing[1]:
+                        best_sb[o['name']] = (book_title, o['price'], 1 / american_to_decimal(o['price']))
+
+            draw_entry = best_sb.get('Draw')
+            best_a_entry = next((v for k, v in best_sb.items() if _teams_match(kg['team_a'], k)), None)
+            best_b_entry = next((v for k, v in best_sb.items() if _teams_match(kg['team_b'], k)), None)
+
+            # Combination 1: Kalshi YES Team A + best SB Draw + best SB Team B
+            # Combination 2: Kalshi YES Team B + best SB Draw + best SB Team A
+            for kalshi_team, kalshi_ask, sb_entry in [
+                (kg['team_a'], kg['team_a_yes_ask'], best_b_entry),
+                (kg['team_b'], kg['team_b_yes_ask'], best_a_entry),
+            ]:
+                if not draw_entry or not sb_entry:
                     continue
-                sb_implied = 1 / american_to_decimal(opp_outcome['price'])
-                total_cost = yes_ask + sb_implied
+                total_cost = kalshi_ask + draw_entry[2] + sb_entry[2]
                 profit = 1 - total_cost
                 if profit >= min_edge:
                     arbs.append({
-                        'game': gi['game_str'],
-                        'sport': sport,
+                        'game': gi['game_str'], 'sport': sport,
                         'commence_time': game['commence_time'],
-                        'kalshi_leg': f'{team_name} YES @ {round(yes_ask * 100, 1)}¢',
-                        'book': gi['books'][book_key]['title'],
-                        'book_leg': f'{opp_name} {opp_outcome["price"]:+d}',
-                        'kalshi_stake_pct': round(yes_ask / total_cost * 100, 1),
-                        'book_stake_pct': round(sb_implied / total_cost * 100, 1),
                         'profit_pct': round(profit * 100, 2),
+                        'legs': [
+                            {'source': 'Kalshi', 'desc': f'{kalshi_team} YES @ {round(kalshi_ask*100,1)}¢', 'stake_pct': round(kalshi_ask/total_cost*100, 1)},
+                            {'source': draw_entry[0], 'desc': f'Draw {draw_entry[1]:+d}', 'stake_pct': round(draw_entry[2]/total_cost*100, 1)},
+                            {'source': sb_entry[0], 'desc': f'opp {sb_entry[1]:+d}', 'stake_pct': round(sb_entry[2]/total_cost*100, 1)},
+                        ],
+                    })
+
+            # Combination 3: Kalshi YES TIE + best SB Team A + best SB Team B
+            tie_ask = kg.get('tie_yes_ask', 0)
+            if tie_ask > 0 and best_a_entry and best_b_entry:
+                total_cost = tie_ask + best_a_entry[2] + best_b_entry[2]
+                profit = 1 - total_cost
+                if profit >= min_edge:
+                    arbs.append({
+                        'game': gi['game_str'], 'sport': sport,
+                        'commence_time': game['commence_time'],
+                        'profit_pct': round(profit * 100, 2),
+                        'legs': [
+                            {'source': 'Kalshi', 'desc': f'Draw YES @ {round(tie_ask*100,1)}¢', 'stake_pct': round(tie_ask/total_cost*100, 1)},
+                            {'source': best_a_entry[0], 'desc': f'{kg["team_a"]} {best_a_entry[1]:+d}', 'stake_pct': round(best_a_entry[2]/total_cost*100, 1)},
+                            {'source': best_b_entry[0], 'desc': f'{kg["team_b"]} {best_b_entry[1]:+d}', 'stake_pct': round(best_b_entry[2]/total_cost*100, 1)},
+                        ],
                     })
 
     arbs.sort(key=lambda x: x['profit_pct'], reverse=True)
@@ -940,8 +998,8 @@ def print_kalshi_opportunities(arbs, ev_opps):
         for a in arbs:
             print(f"\n  {a['game']}  ({a['sport']})")
             print(f"  Game time:    {to_eastern(a['commence_time'])}")
-            print(f"  Kalshi leg:   {a['kalshi_leg']}  ({a['kalshi_stake_pct']}% of stake)")
-            print(f"  {a['book']:<16} {a['book_leg']}  ({a['book_stake_pct']}% of stake)")
+            for leg in a['legs']:
+                print(f"  {leg['source']:<18} {leg['desc']}  ({leg['stake_pct']}% of stake)")
             print(f"  Profit:       +{a['profit_pct']}% of total staked")
         print(f"\n{'='*60}\n")
 
