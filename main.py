@@ -506,6 +506,48 @@ def log_to_sheet(sheet, opps):
         print("No new opportunities to log (all already in sheet).")
 
 
+def _american(decimal_odds):
+    if decimal_odds >= 2:
+        return f"+{round((decimal_odds - 1) * 100)}"
+    return str(-round(100 / (decimal_odds - 1)))
+
+
+def log_kalshi_to_sheet(sheet, ev_opps):
+    existing = sheet.get_all_values()
+    logged = {(r[1], r[3], r[5]) for r in existing[1:]} if len(existing) > 1 else set()
+
+    new_rows = []
+    for o in ev_opps:
+        key = (o['game'], 'h2h', o['pick'])
+        if key in logged:
+            continue
+        kalshi_american = _american(100 / o['kalshi_price_pct'])
+        pin_american    = _american(100 / o['true_prob'])
+        new_rows.append([
+            datetime.now(EASTERN).strftime('%Y-%m-%d %I:%M %p ET'),
+            o['game'],
+            o['sport'],
+            'h2h',
+            to_eastern(o['commence_time']),
+            o['pick'],
+            'Kalshi',
+            pin_american,
+            o['true_prob'],
+            kalshi_american,
+            o['kalshi_price_pct'],
+            o['ev'],
+            o['kelly'],
+            'pending',
+            '',
+        ])
+
+    if new_rows:
+        sheet.append_rows(new_rows)
+        print(f"Logged {len(new_rows)} Kalshi opportunity/opportunities to sheet.")
+    else:
+        print("No new Kalshi opportunities to log (all already in sheet).")
+
+
 def update_results(sheet, api_key=None):
     all_rows = sheet.get_all_values()
     if len(all_rows) < 2:
@@ -1076,6 +1118,18 @@ def main():
         print(f"Found {len(kalshi_games)} open Kalshi game matchups.")
         arbs, ev_opps = find_kalshi_opportunities(kalshi_games, data, min_edge=args.min_edge / 100, debug=args.kalshi_debug)
         print_kalshi_opportunities(arbs, ev_opps)
+        if args.log_sheet:
+            if not GSPREAD_AVAILABLE:
+                print("Error: gspread not installed. Run: pip install gspread google-auth")
+                return
+            creds_path = os.getenv('GOOGLE_CREDENTIALS_PATH')
+            sheet_name = os.getenv('SHEET_NAME', 'Sharp Bot Picks')
+            if not creds_path:
+                print("Error: GOOGLE_CREDENTIALS_PATH not set in .env")
+                return
+            sheet = setup_sheet(creds_path, sheet_name)
+            if sheet:
+                log_kalshi_to_sheet(sheet, ev_opps)
         return
 
     if args.list_books:
