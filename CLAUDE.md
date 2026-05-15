@@ -68,6 +68,8 @@ pip install -r requirements.txt
 
 Team names are decoded from the ticker suffix (e.g. `KXNBAGAME-26MAY15DETCLE-DET` → Detroit Pistons) using `KALSHI_GAME_SERIES`. Prices come from `yes_ask_dollars` (0.0–1.0 = implied prob). Outputs: (1) arb opportunities and (2) +EV vs Pinnacle true probability.
 
+**Matching:** Games are matched by date (parsed from the Kalshi event ticker, e.g. `26MAY15` → 2026-05-15, compared against Pinnacle `commence_time` in ET) + sport + fuzzy team name. Date matching is required to avoid cross-matching games in a multi-game series. Team name fuzzy matching uses exact → substring → last-word fallback, with `_AMBIGUOUS_WORDS` blocking common soccer suffixes (`united`, `city`, `fc`, etc.) that appear in multiple club names.
+
 **Arb logic:** For 2-outcome sports: Kalshi YES one team + sportsbook on the other — if total < 100%, locked profit. For soccer (3-outcome): checks three combinations — Kalshi YES [home] + best SB draw + best SB away, Kalshi YES [away] + best SB draw + best SB home, Kalshi YES Draw + best SB home + best SB away. SB legs pick the best available odds across all 8 soft books independently.
 
 Auth uses RSA-PSS signing via `KALSHI_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`. Use `--kalshi-debug` to see every matched game and its EV breakdown.
