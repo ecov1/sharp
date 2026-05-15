@@ -27,6 +27,7 @@ except ImportError:
     GSPREAD_AVAILABLE = False
 
 CACHE_FILE = 'odds_cache.json'
+KALSHI_CACHE_FILE = 'kalshi_odds_cache.json'
 CACHE_TTL_MINUTES = 10
 SHARP_BOOK = 'pinnacle'
 SOFT_BOOKS = ['fanduel', 'draftkings', 'betmgm', 'betrivers', 'bovada', 'betonlineag', 'lowvig', 'mybookieag']
@@ -98,6 +99,55 @@ KALSHI_GAME_SERIES = {
             'TEN': 'Tennessee Titans', 'WSH': 'Washington Commanders',
         },
     },
+    # Soccer: 3-way markets (home/draw/away). TIE leg is filtered out during fetching.
+    # Arb detection is skipped for soccer since 2-leg arb doesn't cover the draw.
+    'KXEPLGAME': {
+        'sport': 'soccer_epl',
+        'draws': True,
+        'teams': {
+            'ARS': 'Arsenal', 'AVL': 'Aston Villa', 'BOU': 'Bournemouth',
+            'BRE': 'Brentford', 'BRI': 'Brighton and Hove Albion', 'BUR': 'Burnley',
+            'CFC': 'Chelsea', 'CRY': 'Crystal Palace', 'EVE': 'Everton',
+            'FUL': 'Fulham', 'LEE': 'Leeds United', 'LFC': 'Liverpool',
+            'MCI': 'Manchester City', 'MUN': 'Manchester United', 'NEW': 'Newcastle United',
+            'NFO': 'Nottingham Forest', 'SUN': 'Sunderland', 'TOT': 'Tottenham Hotspur',
+            'WHU': 'West Ham United', 'WOL': 'Wolverhampton Wanderers',
+        },
+    },
+    'KXUCLGAME': {
+        'sport': 'soccer_uefa_champs_league',
+        'draws': True,
+        'teams': {
+            'ARS': 'Arsenal', 'ATM': 'Atletico Madrid', 'BAR': 'Barcelona',
+            'BAY': 'Bayern Munich', 'BVB': 'Borussia Dortmund', 'CHE': 'Chelsea',
+            'INT': 'Inter Milan', 'JUV': 'Juventus', 'LFC': 'Liverpool',
+            'MCI': 'Manchester City', 'PSG': 'Paris Saint-Germain', 'RMA': 'Real Madrid',
+        },
+    },
+    'KXBUNDESLIGAGAME': {
+        'sport': 'soccer_germany_bundesliga',
+        'draws': True,
+        'teams': {
+            'BMG': 'Borussia Monchengladbach', 'BMU': 'Bayern Munich', 'BVB': 'Borussia Dortmund',
+            'FCA': 'FC Augsburg', 'FCH': 'FC Heidenheim', 'HSV': 'Hamburger SV',
+            'KOE': 'FC Koln', 'LEV': 'Bayer Leverkusen', 'M05': 'Mainz 05',
+            'RBL': 'RB Leipzig', 'SCF': 'SC Freiburg', 'SGE': 'Eintracht Frankfurt',
+            'STP': 'FC St. Pauli', 'SVW': 'Werder Bremen', 'TSG': 'Hoffenheim',
+            'UNI': 'Union Berlin', 'VFB': 'VfB Stuttgart', 'WOB': 'Wolfsburg',
+        },
+    },
+    'KXLIGUE1GAME': {
+        'sport': 'soccer_france_ligue_one',
+        'draws': True,
+        'teams': {
+            'ANG': 'Angers SCO', 'ASM': 'AS Monaco', 'AUX': 'AJ Auxerre',
+            'FCL': 'FC Lorient', 'FCM': 'FC Metz', 'FCN': 'FC Nantes',
+            'HAC': 'Le Havre AC', 'LIL': 'Lille OSC', 'NIC': 'OGC Nice',
+            'OL': 'Olympique Lyonnais', 'OM': 'Olympique de Marseille', 'PAR': 'Paris FC',
+            'PSG': 'Paris Saint-Germain', 'RCL': 'RC Lens', 'RCS': 'RC Strasbourg',
+            'REN': 'Stade Rennais', 'STB': 'Stade Brestois 29', 'TFC': 'Toulouse FC',
+        },
+    },
 }
 
 ESPN_SPORT_MAP = {
@@ -150,6 +200,31 @@ def fetch_odds(key, sport):
     response = requests.get(url, params=params)
     response.raise_for_status()
     return response.json()
+
+
+def fetch_odds_for_kalshi(api_key, force_refresh=False):
+    """Fetch odds for all Kalshi-covered sports, cached separately from normal EV scans."""
+    if not force_refresh and os.path.exists(KALSHI_CACHE_FILE):
+        with open(KALSHI_CACHE_FILE) as f:
+            cache = json.load(f)
+        if datetime.now() - datetime.fromisoformat(cache['cached_at']) < timedelta(minutes=CACHE_TTL_MINUTES):
+            print("Using cached Kalshi odds (--refresh to update).")
+            return cache['data']
+
+    sports = list({info['sport'] for info in KALSHI_GAME_SERIES.values()})
+    all_games = []
+    for sport in sorted(sports):
+        try:
+            games = fetch_odds(api_key, sport)
+            all_games.extend(games)
+            print(f"  Fetched {len(games)} {sport} games.")
+        except Exception as e:
+            print(f"  Warning: could not fetch {sport}: {e}")
+
+    with open(KALSHI_CACHE_FILE, 'w') as f:
+        json.dump({'cached_at': datetime.now().isoformat(), 'data': all_games}, f, indent=2)
+
+    return all_games
 
 
 def fetch_odds_api_scores(api_key, sport):
@@ -695,6 +770,8 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
                 if len(parts) == 2:
                     legs[parts[1]] = m
 
+            legs.pop('TIE', None)  # soccer has a draw leg; skip it for team matching
+
             if len(legs) != 2:
                 continue
 
@@ -722,6 +799,7 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
                 'team_b': team_b,
                 'team_a_yes_ask': team_a_yes_ask,  # dollars (0.0–1.0 = implied prob)
                 'team_b_yes_ask': team_b_yes_ask,
+                'draws': series_info.get('draws', False),
             })
 
     return all_games
@@ -740,7 +818,7 @@ def _teams_match(a, b):
     return bool(a_last and b_last and a_last == b_last and len(a_last) > 3)
 
 
-def find_kalshi_opportunities(kalshi_games, odds_data, min_edge):
+def find_kalshi_opportunities(kalshi_games, odds_data, min_edge, debug=False):
     now = datetime.now(timezone.utc)
 
     # Build lookup: sport -> list of game info with Pinnacle true probs
@@ -763,6 +841,11 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge):
             'game_str': f"{game['away_team']} @ {game['home_team']}",
         })
 
+    if debug:
+        matched_sports = set(games_by_sport.keys()) & {kg['sport'] for kg in kalshi_games}
+        print(f"\n  Pinnacle has {sum(len(v) for v in games_by_sport.values())} upcoming games across: {list(games_by_sport.keys())}")
+        print(f"  Kalshi sports with Pinnacle overlap: {matched_sports or 'none'}\n")
+
     arbs, ev_opps = [], []
 
     for kg in kalshi_games:
@@ -777,6 +860,11 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge):
                 (_teams_match(kg['team_b'], g['game']['home_team']) or _teams_match(kg['team_b'], g['game']['away_team']))
             )
         ), None)
+
+        if debug:
+            status = f"→ matched: {gi['game_str']}" if gi else "→ no Pinnacle match"
+            print(f"  {kg['team_a']} vs {kg['team_b']} ({sport})  {status}")
+
         if not gi:
             continue
 
@@ -794,6 +882,9 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge):
             decimal_k = 1.0 / yes_ask
             ev = true_prob * decimal_k - 1
 
+            if debug:
+                print(f"    {team_name}: Kalshi {round(yes_ask*100,1)}%  Pinnacle {round(true_prob*100,2)}%  EV {round(ev*100,2):+.2f}%")
+
             if ev >= min_edge:
                 b = decimal_k - 1
                 kelly = max(0.0, (true_prob * decimal_k - 1) / b * 0.5) * 100 if b > 0 else 0.0
@@ -808,7 +899,9 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge):
                     'kelly': round(kelly, 2),
                 })
 
-            # Arb: Kalshi YES on this team + sportsbook on the opposing team
+            # Arb: only valid for 2-outcome sports (a 2-leg arb doesn't cover the draw in soccer)
+            if kg.get('draws'):
+                continue
             for book_key in SOFT_BOOKS:
                 if book_key not in gi['books']:
                     continue
@@ -880,6 +973,7 @@ def main():
     parser.add_argument('--validate', action='store_true', help='Show side-by-side odds table for manual verification')
     parser.add_argument('--update-results', action='store_true', help='Fetch scores and update Result/P&L for pending bets in Google Sheet')
     parser.add_argument('--kalshi', action='store_true', help='Scan Kalshi markets for arb and +EV opportunities')
+    parser.add_argument('--kalshi-debug', action='store_true', help='Show every Kalshi game match and EV breakdown')
     args = parser.parse_args()
 
     load_dotenv()
@@ -911,16 +1005,12 @@ def main():
         if not kalshi_key_id or not kalshi_key_path:
             print("Error: KALSHI_KEY_ID and KALSHI_PRIVATE_KEY_PATH must be set in .env")
             return
-        if args.refresh or not is_cache_valid():
-            print(f"Fetching fresh odds from API (sport: {args.sport})...")
-            data = fetch_odds(key, args.sport)
-            save_cache(data)
-        else:
-            data = load_cache()
+        print("Fetching odds for all Kalshi-covered sports...")
+        data = fetch_odds_for_kalshi(key, force_refresh=args.refresh)
         print("Fetching Kalshi game markets...")
         kalshi_games = fetch_kalshi_game_markets(kalshi_key_id, kalshi_key_path)
         print(f"Found {len(kalshi_games)} open Kalshi game matchups.")
-        arbs, ev_opps = find_kalshi_opportunities(kalshi_games, data, min_edge=args.min_edge / 100)
+        arbs, ev_opps = find_kalshi_opportunities(kalshi_games, data, min_edge=args.min_edge / 100, debug=args.kalshi_debug)
         print_kalshi_opportunities(arbs, ev_opps)
         return
 
