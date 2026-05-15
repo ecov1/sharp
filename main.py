@@ -83,22 +83,9 @@ KALSHI_GAME_SERIES = {
             'WSH': 'Washington Capitals', 'WPG': 'Winnipeg Jets',
         },
     },
-    'KXNFLGAME': {
-        'sport': 'americanfootball_nfl',
-        'teams': {
-            'ARI': 'Arizona Cardinals', 'ATL': 'Atlanta Falcons', 'BAL': 'Baltimore Ravens',
-            'BUF': 'Buffalo Bills', 'CAR': 'Carolina Panthers', 'CHI': 'Chicago Bears',
-            'CIN': 'Cincinnati Bengals', 'CLE': 'Cleveland Browns', 'DAL': 'Dallas Cowboys',
-            'DEN': 'Denver Broncos', 'DET': 'Detroit Lions', 'GBP': 'Green Bay Packers',
-            'HOU': 'Houston Texans', 'IND': 'Indianapolis Colts', 'JAX': 'Jacksonville Jaguars',
-            'KC': 'Kansas City Chiefs', 'LAC': 'Los Angeles Chargers', 'LAR': 'Los Angeles Rams',
-            'LVR': 'Las Vegas Raiders', 'MIA': 'Miami Dolphins', 'MIN': 'Minnesota Vikings',
-            'NE': 'New England Patriots', 'NO': 'New Orleans Saints', 'NYG': 'New York Giants',
-            'NYJ': 'New York Jets', 'PHI': 'Philadelphia Eagles', 'PIT': 'Pittsburgh Steelers',
-            'SFO': 'San Francisco 49ers', 'SEA': 'Seattle Seahawks', 'TBB': 'Tampa Bay Buccaneers',
-            'TEN': 'Tennessee Titans', 'WSH': 'Washington Commanders',
-        },
-    },
+    # NFL: re-enable in September when the season starts
+    # 'KXNFLGAME': { 'sport': 'americanfootball_nfl', 'teams': { ... } },
+
     # Soccer: 3-way markets (home/draw/away). TIE leg is filtered out during fetching.
     # Arb detection is skipped for soccer since 2-leg arb doesn't cover the draw.
     'KXEPLGAME': {
