@@ -16,6 +16,7 @@ python main.py --min-edge 5           # only show edges ≥5%
 python main.py --validate             # side-by-side odds table for manual verification
 python main.py --log-sheet            # append opportunities to Google Sheet (with Kelly %)
 python main.py --update-results       # fetch scores, fill in Result + P&L for pending bets
+python main.py --kalshi               # scan Kalshi markets for arb + +EV opportunities
 python main.py --list-books           # show all bookmakers available for a sport
 ```
 
@@ -25,6 +26,8 @@ python main.py --list-books           # show all bookmakers available for a spor
 apiKey=                        # The Odds API key
 GOOGLE_CREDENTIALS_PATH=       # Path to Google service account JSON (for --log-sheet)
 SHEET_NAME=Sharp Bot Picks     # Google Sheet name (optional, this is the default)
+KALSHI_KEY_ID=                 # Kalshi API key ID (for --kalshi)
+KALSHI_PRIVATE_KEY_PATH=       # Path to Kalshi RSA private key .pem file (for --kalshi)
 ```
 
 ## Dependencies
@@ -49,6 +52,4 @@ pip install -r requirements.txt
 
 **Books** — `SHARP_BOOK` and `SOFT_BOOKS` at the top of `main.py` are the only place to add/change which books are tracked.
 
-## Planned features (tracked as tasks)
-
-- Kalshi API integration as a second odds source (their public REST API, matching events to Pinnacle lines by team/date is the fiddly part)
+**Kalshi** — `--kalshi` queries Kalshi by `series_ticker` (KXNBAGAME, KXMLBGAME, KXNHLGAME, KXNFLGAME) to get individual game winner markets. Team names are decoded from the ticker suffix (e.g. `KXNBAGAME-26MAY15DETCLE-DET` → Detroit Pistons) using `KALSHI_GAME_SERIES`. Prices come from `yes_ask_dollars` (0.0–1.0 scale = implied prob). Matches games to the Pinnacle odds cache by sport + fuzzy team name, then outputs: (1) arb opportunities where Kalshi + sportsbook prices for opposite sides sum to <100%, and (2) +EV opportunities where Kalshi offers better odds than Pinnacle's true probability. Auth uses RSA-PSS signing via `KALSHI_KEY_ID` + `KALSHI_PRIVATE_KEY_PATH`.

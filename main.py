@@ -1,10 +1,21 @@
 import os
+import re
 import json
+import base64
+import time
 import argparse
 import requests
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+    from cryptography.hazmat.primitives.asymmetric.padding import PSS, MGF1
+    CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    CRYPTOGRAPHY_AVAILABLE = False
 
 EASTERN = ZoneInfo('America/New_York')
 
@@ -21,6 +32,73 @@ SHARP_BOOK = 'pinnacle'
 SOFT_BOOKS = ['fanduel', 'draftkings', 'betmgm', 'betrivers', 'bovada', 'betonlineag', 'lowvig', 'mybookieag']
 DEFAULT_MIN_EDGE = 0.03
 MARKETS = ['h2h', 'spreads', 'totals']
+
+KALSHI_API_URL = 'https://external-api.kalshi.com/trade-api/v2'
+
+KALSHI_GAME_SERIES = {
+    'KXNBAGAME': {
+        'sport': 'basketball_nba',
+        'teams': {
+            'ATL': 'Atlanta Hawks', 'BOS': 'Boston Celtics', 'BKN': 'Brooklyn Nets',
+            'CHA': 'Charlotte Hornets', 'CHI': 'Chicago Bulls', 'CLE': 'Cleveland Cavaliers',
+            'DAL': 'Dallas Mavericks', 'DEN': 'Denver Nuggets', 'DET': 'Detroit Pistons',
+            'GSW': 'Golden State Warriors', 'HOU': 'Houston Rockets', 'IND': 'Indiana Pacers',
+            'LAC': 'LA Clippers', 'LAL': 'Los Angeles Lakers', 'MEM': 'Memphis Grizzlies',
+            'MIA': 'Miami Heat', 'MIL': 'Milwaukee Bucks', 'MIN': 'Minnesota Timberwolves',
+            'NOP': 'New Orleans Pelicans', 'NYK': 'New York Knicks', 'OKC': 'Oklahoma City Thunder',
+            'ORL': 'Orlando Magic', 'PHI': 'Philadelphia 76ers', 'PHX': 'Phoenix Suns',
+            'POR': 'Portland Trail Blazers', 'SAC': 'Sacramento Kings', 'SAS': 'San Antonio Spurs',
+            'TOR': 'Toronto Raptors', 'UTA': 'Utah Jazz', 'WAS': 'Washington Wizards',
+        },
+    },
+    'KXMLBGAME': {
+        'sport': 'baseball_mlb',
+        'teams': {
+            'ARI': 'Arizona Diamondbacks', 'ATL': 'Atlanta Braves', 'BAL': 'Baltimore Orioles',
+            'BOS': 'Boston Red Sox', 'CHC': 'Chicago Cubs', 'CWS': 'Chicago White Sox',
+            'CIN': 'Cincinnati Reds', 'CLE': 'Cleveland Guardians', 'COL': 'Colorado Rockies',
+            'DET': 'Detroit Tigers', 'HOU': 'Houston Astros', 'KC': 'Kansas City Royals',
+            'LAA': 'Los Angeles Angels', 'LAD': 'Los Angeles Dodgers', 'MIA': 'Miami Marlins',
+            'MIL': 'Milwaukee Brewers', 'MIN': 'Minnesota Twins', 'NYM': 'New York Mets',
+            'NYY': 'New York Yankees', 'OAK': 'Oakland Athletics', 'PHI': 'Philadelphia Phillies',
+            'PIT': 'Pittsburgh Pirates', 'SDP': 'San Diego Padres', 'SFG': 'San Francisco Giants',
+            'SEA': 'Seattle Mariners', 'STL': 'St. Louis Cardinals', 'TBR': 'Tampa Bay Rays',
+            'TEX': 'Texas Rangers', 'TOR': 'Toronto Blue Jays', 'WSN': 'Washington Nationals',
+        },
+    },
+    'KXNHLGAME': {
+        'sport': 'icehockey_nhl',
+        'teams': {
+            'ANA': 'Anaheim Ducks', 'BOS': 'Boston Bruins', 'BUF': 'Buffalo Sabres',
+            'CGY': 'Calgary Flames', 'CAR': 'Carolina Hurricanes', 'CHI': 'Chicago Blackhawks',
+            'COL': 'Colorado Avalanche', 'CBJ': 'Columbus Blue Jackets', 'DAL': 'Dallas Stars',
+            'DET': 'Detroit Red Wings', 'EDM': 'Edmonton Oilers', 'FLA': 'Florida Panthers',
+            'LAK': 'Los Angeles Kings', 'MIN': 'Minnesota Wild', 'MTL': 'Montreal Canadiens',
+            'NSH': 'Nashville Predators', 'NJD': 'New Jersey Devils', 'NYI': 'New York Islanders',
+            'NYR': 'New York Rangers', 'OTT': 'Ottawa Senators', 'PHI': 'Philadelphia Flyers',
+            'PIT': 'Pittsburgh Penguins', 'SJS': 'San Jose Sharks', 'SEA': 'Seattle Kraken',
+            'STL': 'St. Louis Blues', 'TBL': 'Tampa Bay Lightning', 'TOR': 'Toronto Maple Leafs',
+            'UTA': 'Utah Hockey Club', 'VAN': 'Vancouver Canucks', 'VGK': 'Vegas Golden Knights',
+            'WSH': 'Washington Capitals', 'WPG': 'Winnipeg Jets',
+        },
+    },
+    'KXNFLGAME': {
+        'sport': 'americanfootball_nfl',
+        'teams': {
+            'ARI': 'Arizona Cardinals', 'ATL': 'Atlanta Falcons', 'BAL': 'Baltimore Ravens',
+            'BUF': 'Buffalo Bills', 'CAR': 'Carolina Panthers', 'CHI': 'Chicago Bears',
+            'CIN': 'Cincinnati Bengals', 'CLE': 'Cleveland Browns', 'DAL': 'Dallas Cowboys',
+            'DEN': 'Denver Broncos', 'DET': 'Detroit Lions', 'GBP': 'Green Bay Packers',
+            'HOU': 'Houston Texans', 'IND': 'Indianapolis Colts', 'JAX': 'Jacksonville Jaguars',
+            'KC': 'Kansas City Chiefs', 'LAC': 'Los Angeles Chargers', 'LAR': 'Los Angeles Rams',
+            'LVR': 'Las Vegas Raiders', 'MIA': 'Miami Dolphins', 'MIN': 'Minnesota Vikings',
+            'NE': 'New England Patriots', 'NO': 'New Orleans Saints', 'NYG': 'New York Giants',
+            'NYJ': 'New York Jets', 'PHI': 'Philadelphia Eagles', 'PIT': 'Pittsburgh Steelers',
+            'SFO': 'San Francisco 49ers', 'SEA': 'Seattle Seahawks', 'TBB': 'Tampa Bay Buccaneers',
+            'TEN': 'Tennessee Titans', 'WSH': 'Washington Commanders',
+        },
+    },
+}
 
 ESPN_SPORT_MAP = {
     'americanfootball_nfl':      ('football',    'nfl'),
@@ -565,6 +643,233 @@ def print_opportunities(opps):
     print(f"\n{'='*60}\n")
 
 
+def _kalshi_headers(key_id, private_key_path, method, path):
+    timestamp_ms = str(int(time.time() * 1000))
+    msg = (timestamp_ms + method.upper() + path).encode()
+    with open(private_key_path, 'rb') as f:
+        private_key = serialization.load_pem_private_key(f.read(), password=None)
+    signature = private_key.sign(msg, PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH), hashes.SHA256())
+    return {
+        'KALSHI-ACCESS-KEY': key_id,
+        'KALSHI-ACCESS-TIMESTAMP': timestamp_ms,
+        'KALSHI-ACCESS-SIGNATURE': base64.b64encode(signature).decode(),
+    }
+
+
+def _kalshi_get(key_id, private_key_path, path, params=None):
+    headers = _kalshi_headers(key_id, private_key_path, 'GET', '/trade-api/v2' + path)
+    response = requests.get(f'{KALSHI_API_URL}{path}', headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_kalshi_game_markets(key_id, private_key_path):
+    """Fetch individual game winner markets from Kalshi, grouped by matchup."""
+    all_games = []
+
+    for series_ticker, series_info in KALSHI_GAME_SERIES.items():
+        markets = []
+        cursor = None
+        while True:
+            params = {'series_ticker': series_ticker, 'status': 'open', 'limit': 1000}
+            if cursor:
+                params['cursor'] = cursor
+            resp = _kalshi_get(key_id, private_key_path, '/markets', params)
+            batch = resp.get('markets', [])
+            markets.extend(batch)
+            cursor = resp.get('cursor')
+            if not cursor or not batch:
+                break
+
+        # Group by event_ticker (one event = one game matchup)
+        events = {}
+        for market in markets:
+            et = market.get('event_ticker', '')
+            events.setdefault(et, []).append(market)
+
+        for event_ticker, event_markets in events.items():
+            # Each market ticker ends in '-TEAMCODE' — extract both teams
+            legs = {}
+            for m in event_markets:
+                parts = m.get('ticker', '').rsplit('-', 1)
+                if len(parts) == 2:
+                    legs[parts[1]] = m
+
+            if len(legs) != 2:
+                continue
+
+            codes = list(legs.keys())
+            team_a_code, team_b_code = codes[0], codes[1]
+            team_a = series_info['teams'].get(team_a_code)
+            team_b = series_info['teams'].get(team_b_code)
+            if not team_a or not team_b:
+                continue
+
+            try:
+                team_a_yes_ask = float(legs[team_a_code].get('yes_ask_dollars', 0))
+                team_b_yes_ask = float(legs[team_b_code].get('yes_ask_dollars', 0))
+            except (TypeError, ValueError):
+                continue
+
+            if team_a_yes_ask <= 0 or team_b_yes_ask <= 0:
+                continue
+
+            all_games.append({
+                'series': series_ticker,
+                'sport': series_info['sport'],
+                'event_ticker': event_ticker,
+                'team_a': team_a,
+                'team_b': team_b,
+                'team_a_yes_ask': team_a_yes_ask,  # dollars (0.0–1.0 = implied prob)
+                'team_b_yes_ask': team_b_yes_ask,
+            })
+
+    return all_games
+
+
+def _normalize(name):
+    return re.sub(r'[^a-z ]', '', name.lower()).strip()
+
+
+def _teams_match(a, b):
+    na, nb = _normalize(a), _normalize(b)
+    if na == nb or na in nb or nb in na:
+        return True
+    a_last = na.split()[-1] if na.split() else ''
+    b_last = nb.split()[-1] if nb.split() else ''
+    return bool(a_last and b_last and a_last == b_last and len(a_last) > 3)
+
+
+def find_kalshi_opportunities(kalshi_games, odds_data, min_edge):
+    now = datetime.now(timezone.utc)
+
+    # Build lookup: sport -> list of game info with Pinnacle true probs
+    games_by_sport = {}
+    for game in odds_data:
+        if datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00')) <= now:
+            continue
+        books = {b['key']: b for b in game['bookmakers']}
+        if SHARP_BOOK not in books:
+            continue
+        sharp_h2h = next((m for m in books[SHARP_BOOK]['markets'] if m['key'] == 'h2h'), None)
+        if not sharp_h2h:
+            continue
+        raw = {o['name']: implied_prob(o['price']) for o in sharp_h2h['outcomes']}
+        total = sum(raw.values())
+        games_by_sport.setdefault(game['sport_key'], []).append({
+            'game': game,
+            'books': books,
+            'true_probs': {k: v / total for k, v in raw.items()},
+            'game_str': f"{game['away_team']} @ {game['home_team']}",
+        })
+
+    arbs, ev_opps = [], []
+
+    for kg in kalshi_games:
+        sport = kg['sport']
+        if sport not in games_by_sport:
+            continue
+
+        gi = next((
+            g for g in games_by_sport[sport]
+            if (
+                (_teams_match(kg['team_a'], g['game']['home_team']) or _teams_match(kg['team_a'], g['game']['away_team'])) and
+                (_teams_match(kg['team_b'], g['game']['home_team']) or _teams_match(kg['team_b'], g['game']['away_team']))
+            )
+        ), None)
+        if not gi:
+            continue
+
+        game = gi['game']
+
+        for team_name, yes_ask, opp_name in [
+            (kg['team_a'], kg['team_a_yes_ask'], kg['team_b']),
+            (kg['team_b'], kg['team_b_yes_ask'], kg['team_a']),
+        ]:
+            # yes_ask is 0.0–1.0: cost in dollars to win $1 → implied prob
+            pinnacle_team = next((t for t in gi['true_probs'] if _teams_match(team_name, t)), None)
+            if not pinnacle_team:
+                continue
+            true_prob = gi['true_probs'][pinnacle_team]
+            decimal_k = 1.0 / yes_ask
+            ev = true_prob * decimal_k - 1
+
+            if ev >= min_edge:
+                b = decimal_k - 1
+                kelly = max(0.0, (true_prob * decimal_k - 1) / b * 0.5) * 100 if b > 0 else 0.0
+                ev_opps.append({
+                    'game': gi['game_str'],
+                    'sport': sport,
+                    'commence_time': game['commence_time'],
+                    'pick': team_name,
+                    'kalshi_price_pct': round(yes_ask * 100, 1),
+                    'true_prob': round(true_prob * 100, 2),
+                    'ev': round(ev * 100, 2),
+                    'kelly': round(kelly, 2),
+                })
+
+            # Arb: Kalshi YES on this team + sportsbook on the opposing team
+            for book_key in SOFT_BOOKS:
+                if book_key not in gi['books']:
+                    continue
+                soft_h2h = next((m for m in gi['books'][book_key]['markets'] if m['key'] == 'h2h'), None)
+                if not soft_h2h:
+                    continue
+                opp_outcome = next((o for o in soft_h2h['outcomes'] if _teams_match(opp_name, o['name'])), None)
+                if not opp_outcome:
+                    continue
+                sb_implied = 1 / american_to_decimal(opp_outcome['price'])
+                total_cost = yes_ask + sb_implied
+                profit = 1 - total_cost
+                if profit >= min_edge:
+                    arbs.append({
+                        'game': gi['game_str'],
+                        'sport': sport,
+                        'commence_time': game['commence_time'],
+                        'kalshi_leg': f'{team_name} YES @ {round(yes_ask * 100, 1)}¢',
+                        'book': gi['books'][book_key]['title'],
+                        'book_leg': f'{opp_name} {opp_outcome["price"]:+d}',
+                        'kalshi_stake_pct': round(yes_ask / total_cost * 100, 1),
+                        'book_stake_pct': round(sb_implied / total_cost * 100, 1),
+                        'profit_pct': round(profit * 100, 2),
+                    })
+
+    arbs.sort(key=lambda x: x['profit_pct'], reverse=True)
+    ev_opps.sort(key=lambda x: x['ev'], reverse=True)
+    return arbs, ev_opps
+
+
+def print_kalshi_opportunities(arbs, ev_opps):
+    if arbs:
+        print(f"\n{'='*60}")
+        print(f"  KALSHI ARB OPPORTUNITIES  ({len(arbs)} found)")
+        print(f"{'='*60}")
+        for a in arbs:
+            print(f"\n  {a['game']}  ({a['sport']})")
+            print(f"  Game time:    {to_eastern(a['commence_time'])}")
+            print(f"  Kalshi leg:   {a['kalshi_leg']}  ({a['kalshi_stake_pct']}% of stake)")
+            print(f"  {a['book']:<16} {a['book_leg']}  ({a['book_stake_pct']}% of stake)")
+            print(f"  Profit:       +{a['profit_pct']}% of total staked")
+        print(f"\n{'='*60}\n")
+
+    if ev_opps:
+        print(f"\n{'='*60}")
+        print(f"  KALSHI +EV vs PINNACLE  ({len(ev_opps)} found)")
+        print(f"{'='*60}")
+        for o in ev_opps:
+            print(f"\n  {o['game']}  ({o['sport']})")
+            print(f"  Game time:    {to_eastern(o['commence_time'])}")
+            print(f"  Pick:         {o['pick']} YES on Kalshi")
+            print(f"  Kalshi price: {o['kalshi_price_pct']}¢  (implied: {o['kalshi_price_pct']}%)")
+            print(f"  Pinnacle:     true prob {o['true_prob']}%")
+            print(f"  Edge:         +{o['ev']}%")
+            print(f"  Kelly (half): {o['kelly']}% of bankroll")
+        print(f"\n{'='*60}\n")
+
+    if not arbs and not ev_opps:
+        print("No Kalshi opportunities found above threshold.")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Find +EV bets using Pinnacle as the sharp line.')
     parser.add_argument('--refresh', action='store_true', help='Force a fresh fetch from the API')
@@ -574,6 +879,7 @@ def main():
     parser.add_argument('--log-sheet', action='store_true', help='Log opportunities to Google Sheet')
     parser.add_argument('--validate', action='store_true', help='Show side-by-side odds table for manual verification')
     parser.add_argument('--update-results', action='store_true', help='Fetch scores and update Result/P&L for pending bets in Google Sheet')
+    parser.add_argument('--kalshi', action='store_true', help='Scan Kalshi markets for arb and +EV opportunities')
     args = parser.parse_args()
 
     load_dotenv()
@@ -594,6 +900,28 @@ def main():
         sheet = setup_sheet(creds_path, sheet_name)
         if sheet:
             update_results(sheet, api_key=key)
+        return
+
+    if args.kalshi:
+        if not CRYPTOGRAPHY_AVAILABLE:
+            print("Error: cryptography not installed. Run: pip install cryptography")
+            return
+        kalshi_key_id = os.getenv('KALSHI_KEY_ID')
+        kalshi_key_path = os.getenv('KALSHI_PRIVATE_KEY_PATH')
+        if not kalshi_key_id or not kalshi_key_path:
+            print("Error: KALSHI_KEY_ID and KALSHI_PRIVATE_KEY_PATH must be set in .env")
+            return
+        if args.refresh or not is_cache_valid():
+            print(f"Fetching fresh odds from API (sport: {args.sport})...")
+            data = fetch_odds(key, args.sport)
+            save_cache(data)
+        else:
+            data = load_cache()
+        print("Fetching Kalshi game markets...")
+        kalshi_games = fetch_kalshi_game_markets(kalshi_key_id, kalshi_key_path)
+        print(f"Found {len(kalshi_games)} open Kalshi game matchups.")
+        arbs, ev_opps = find_kalshi_opportunities(kalshi_games, data, min_edge=args.min_edge / 100)
+        print_kalshi_opportunities(arbs, ev_opps)
         return
 
     if args.list_books:
