@@ -763,6 +763,20 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
             events.setdefault(et, []).append(market)
 
         for event_ticker, event_markets in events.items():
+            # Parse game date from ticker: KXMLBGAME-26MAY152138LADLAA → 2026-05-15
+            date_match = re.search(r'-(\d{2})([A-Z]{3})(\d{2})', event_ticker)
+            if not date_match:
+                continue
+            _months = {'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,'JUL':7,'AUG':8,'SEP':9,'OCT':10,'NOV':11,'DEC':12}
+            try:
+                game_date = datetime(
+                    2000 + int(date_match.group(1)),
+                    _months[date_match.group(2)],
+                    int(date_match.group(3)),
+                ).date()
+            except (KeyError, ValueError):
+                continue
+
             # Each market ticker ends in '-TEAMCODE' — extract both teams
             legs = {}
             for m in event_markets:
@@ -796,6 +810,7 @@ def fetch_kalshi_game_markets(key_id, private_key_path):
                 'series': series_ticker,
                 'sport': series_info['sport'],
                 'event_ticker': event_ticker,
+                'game_date': game_date,
                 'team_a': team_a,
                 'team_b': team_b,
                 'team_a_yes_ask': team_a_yes_ask,  # dollars (0.0–1.0 = implied prob)
@@ -811,13 +826,15 @@ def _normalize(name):
     return re.sub(r'[^a-z ]', '', name.lower()).strip()
 
 
+_AMBIGUOUS_WORDS = {'united', 'city', 'fc', 'sc', 'ac', 'athletic', 'rovers', 'wanderers', 'county', 'town', 'rangers'}
+
 def _teams_match(a, b):
     na, nb = _normalize(a), _normalize(b)
     if na == nb or na in nb or nb in na:
         return True
     a_last = na.split()[-1] if na.split() else ''
     b_last = nb.split()[-1] if nb.split() else ''
-    return bool(a_last and b_last and a_last == b_last and len(a_last) > 3)
+    return bool(a_last and b_last and a_last == b_last and len(a_last) > 3 and a_last not in _AMBIGUOUS_WORDS)
 
 
 def find_kalshi_opportunities(kalshi_games, odds_data, min_edge, debug=False):
@@ -855,9 +872,11 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge, debug=False):
         if sport not in games_by_sport:
             continue
 
+        kg_date = kg['game_date']
         gi = next((
             g for g in games_by_sport[sport]
             if (
+                datetime.fromisoformat(g['game']['commence_time'].replace('Z', '+00:00')).astimezone(EASTERN).date() == kg_date and
                 (_teams_match(kg['team_a'], g['game']['home_team']) or _teams_match(kg['team_a'], g['game']['away_team'])) and
                 (_teams_match(kg['team_b'], g['game']['home_team']) or _teams_match(kg['team_b'], g['game']['away_team']))
             )
@@ -865,7 +884,7 @@ def find_kalshi_opportunities(kalshi_games, odds_data, min_edge, debug=False):
 
         if debug:
             status = f"→ matched: {gi['game_str']}" if gi else "→ no Pinnacle match"
-            print(f"  {kg['team_a']} vs {kg['team_b']} ({sport})  {status}")
+            print(f"  {kg['team_a']} vs {kg['team_b']} ({kg_date})  {status}")
 
         if not gi:
             continue
